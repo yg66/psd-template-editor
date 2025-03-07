@@ -204,7 +204,7 @@ const PsdLayerPreview = defineComponent({
         :style="layerStyle(layer)"
         @click.stop="$emit('select-layer', layer)"
       >
-        <img v-if="layer.imageData" :src="layer.imageData" :style="imageStyle(layer)"/>
+        <img v-if="layer.imageData" :src="layer.imageData" :style="imageStyle(layer)" @load="onImageLoad"/>
         <canvas v-else-if="layer.canvas" ref="canvas"/>
         <div v-else-if="layer.text" class="text-layer" :style="textStyle(layer)">{{ layer.text.text }}</div>
         <div v-else class="empty-layer">{{ layer.name }}</div>
@@ -338,6 +338,13 @@ const PsdLayerPreview = defineComponent({
 
             const mode = (layer.blendMode || 'normal').toLowerCase();
             return blendModeMap[mode] || 'normal';
+        },
+        onImageLoad(event) {
+            // 当图像加载完成时，发送到控制台以便调试
+            if (this.layer && this.layer.imageData) {
+                console.log(`图层 "${this.layer.name}" 的图像已加载`);
+                sendImageToConsole(this.layer.imageData, `预览组件中的图层 "${this.layer.name}"`);
+            }
         }
     },
     mounted() {
@@ -347,7 +354,10 @@ const PsdLayerPreview = defineComponent({
             canvas.height = this.layer.height || 0;
             const ctx = canvas.getContext('2d');
 
-            if (ctx && this.layer.canvas.width > 0 && this.layer.canvas.height > 0) {
+            // 确保layer.canvas是有效对象且具有有效尺寸
+            if (ctx && typeof this.layer.canvas === 'object' && this.layer.canvas !== null &&
+                'width' in this.layer.canvas && 'height' in this.layer.canvas &&
+                this.layer.canvas.width > 0 && this.layer.canvas.height > 0) {
                 try {
                     // 特殊处理智能对象
                     if (this.layer.isSmartObject) {
@@ -374,8 +384,30 @@ const PsdLayerPreview = defineComponent({
                             0, 0, canvas.width, canvas.height
                         );
                     }
+
+                    // 将canvas转换为图像数据并发送到控制台
+                    const imageData = canvas.toDataURL('image/png');
+                    sendImageToConsole(imageData, `预览组件中的Canvas "${this.layer.name}"`);
                 } catch (e) {
-                    console.error('Canvas渲染失败:', e);
+                    console.error('Canvas渲染失败:', e, this.layer);
+                }
+            } else {
+                console.warn(`图层 "${this.layer.name}" 的Canvas无效或尺寸无效，跳过渲染`);
+                // 如果有图像数据，可以尝试使用它
+                if (this.layer.imageData) {
+                    console.log(`图层 "${this.layer.name}" 有图像数据，将使用图像数据显示`);
+                    // 创建一个临时图像元素来替代canvas
+                    const img = new Image();
+                    img.src = this.layer.imageData;
+                    img.style.width = '100%';
+                    img.style.height = '100%';
+                    img.style.objectFit = 'contain';
+
+                    // 清空并替换canvas
+                    canvas.parentNode.replaceChild(img, canvas);
+
+                    // 发送图像数据到控制台
+                    sendImageToConsole(this.layer.imageData, `预览组件中的替代图像 "${this.layer.name}"`);
                 }
             }
         }
@@ -398,6 +430,20 @@ const isTextLayer = computed(() => {
 // 使用更可靠的ID生成方式
 let layerIdCounter = 0;
 const generateLayerId = () => `layer_${layerIdCounter++}`;
+
+// 添加一个辅助函数，用于发送图像数据到控制台
+const sendImageToConsole = (imageData, layerName) => {
+    try {
+        // 创建一个临时的fetch请求，这样在网络面板中可以看到图像
+        // 注意：这个请求会失败，但图像数据会显示在网络面板中
+        fetch(imageData)
+            .catch(err => {
+                console.log(`图层 "${layerName}" 的图像数据已发送到网络面板`);
+            });
+    } catch (e) {
+        console.error('发送图像到控制台失败:', e);
+    }
+};
 
 // 处理文件上传
 const handleFileChange = async (e) => {
@@ -544,6 +590,9 @@ const processPsdLayers = (layer, zIndex = 1000, parentPath = '', parentBounds = 
                     layer.imageData = layer.canvas.toDataURL('image/png');
                     console.log(`智能对象图层 "${layerPath}" 的Canvas已转换为图像数据`);
 
+                    // 发送图像到控制台
+                    sendImageToConsole(layer.imageData, layerPath);
+
                     // 记录原始尺寸
                     layer.originalWidth = layer.canvas.width;
                     layer.originalHeight = layer.canvas.height;
@@ -557,12 +606,26 @@ const processPsdLayers = (layer, zIndex = 1000, parentPath = '', parentBounds = 
     // 处理图层内容
     if (layer.canvas) {
         try {
-            // 确保canvas有效
-            if (layer.canvas.width > 0 && layer.canvas.height > 0) {
+            // 确保canvas是有效对象且具有有效尺寸
+            if (typeof layer.canvas === 'object' && layer.canvas !== null &&
+                'width' in layer.canvas && 'height' in layer.canvas &&
+                layer.canvas.width > 0 && layer.canvas.height > 0) {
                 layer.imageData = layer.canvas.toDataURL('image/png');
                 console.log(`图层 "${layerPath}" 的Canvas已转换为图像数据`);
+
+                // 发送图像到控制台
+                sendImageToConsole(layer.imageData, layerPath);
             } else {
-                console.warn(`图层 "${layerPath}" 的Canvas尺寸无效: ${layer.canvas.width}x${layer.canvas.height}`);
+                console.warn(`图层 "${layerPath}" 的Canvas无效或尺寸无效: ${layer.canvas?.width}x${layer.canvas?.height}`);
+                // 如果canvas无效，确保不会在后续代码中使用它
+                if (layer.imageData) {
+                    console.log(`图层 "${layerPath}" 已有图像数据，将继续使用`);
+
+                    // 发送现有图像到控制台
+                    sendImageToConsole(layer.imageData, layerPath + " (现有)");
+                } else {
+                    console.log(`图层 "${layerPath}" 没有有效的图像数据`);
+                }
             }
         } catch (e) {
             console.error(`图层 "${layerPath}" 的Canvas转换失败:`, e);
@@ -589,6 +652,54 @@ const processPsdLayers = (layer, zIndex = 1000, parentPath = '', parentBounds = 
             // 这里可以添加重新生成文本图像的代码
             // 例如，使用canvas绘制文本
             console.log(`文本图层 "${layerPath}" 已更新，需要重新生成图像`);
+
+            // 创建一个新的canvas来绘制文本
+            if (!layer.canvas || layer.canvas.width <= 0 || layer.canvas.height <= 0) {
+                // 如果没有有效的canvas，创建一个新的
+                const canvas = document.createElement('canvas');
+                // 设置canvas尺寸为图层尺寸
+                canvas.width = layer.width || 200;  // 默认宽度
+                canvas.height = layer.height || 100; // 默认高度
+                layer.canvas = canvas;
+            }
+
+            // 获取canvas上下文
+            const ctx = layer.canvas.getContext('2d');
+            if (ctx) {
+                // 清除画布
+                ctx.clearRect(0, 0, layer.canvas.width, layer.canvas.height);
+
+                // 设置文本样式
+                const fontFamily = layer.text.font.name || 'Arial';
+                const fontSize = (layer.text.font.sizes && layer.text.font.sizes[0]) || 12;
+                const color = layer.text.color ?
+                    `rgb(${layer.text.color[0]}, ${layer.text.color[1]}, ${layer.text.color[2]})` :
+                    '#000000';
+
+                ctx.font = `${fontSize}px ${fontFamily}`;
+                ctx.fillStyle = color;
+                ctx.textBaseline = 'top';
+
+                // 绘制文本
+                const text = layer.text.text || '';
+                const lines = text.split('\n');
+                const lineHeight = fontSize * 1.2;
+
+                lines.forEach((line, index) => {
+                    ctx.fillText(line, 0, index * lineHeight);
+                });
+
+                // 更新图像数据
+                try {
+                    layer.imageData = layer.canvas.toDataURL('image/png');
+                    console.log(`文本图层 "${layerPath}" 的图像已重新生成`);
+
+                    // 发送文本图层图像到控制台
+                    sendImageToConsole(layer.imageData, layerPath + " (文本)");
+                } catch (e) {
+                    console.error(`文本图层 "${layerPath}" 的图像生成失败:`, e);
+                }
+            }
 
             // 清除更新标记
             delete layer.textUpdated;
@@ -653,6 +764,12 @@ const setupPreview = (psd) => {
             // previewStyle.value.backgroundImage = `url(${compositeImageUrl})`;
             // previewStyle.value.backgroundSize = 'contain';
             // previewStyle.value.backgroundRepeat = 'no-repeat';
+
+            // 更新PSD的合成图像
+            psd.compositeImageData = compositeImageUrl;
+
+            // 发送合成图像到控制台
+            sendImageToConsole(psd.compositeImageData, "合成图像");
         } catch (e) {
             console.error('合成图像生成失败:', e);
         }
@@ -790,56 +907,38 @@ const updateLayer = () => {
             }
         }
 
-        // 更可靠的方式强制重新渲染
-        // 1. 创建一个深拷贝
-        const psdCopy = JSON.parse(JSON.stringify(psdData.value));
+        // 保存当前选中图层的引用
+        const currentSelectedLayer = selectedLayer.value;
 
-        // 2. 清空当前数据
-        psdData.value = null;
+        // 在原始数据上重新处理图层数据，确保所有计算属性都是最新的
+        processPsdLayers(psdData.value);
 
-        // 3. 在下一个tick中设置新数据
+        // 重要：合成所有图层，生成新的预览图像
+        const compositeImageData = composeLayers(psdData.value);
+
+        // 更新预览区域
+        if (compositeImageData) {
+            // 更新预览容器的背景
+            const currentStyle = { ...previewStyle.value };
+            currentStyle.backgroundImage = `url(${compositeImageData})`;
+            currentStyle.backgroundSize = 'contain';
+            currentStyle.backgroundPosition = 'center';
+            currentStyle.backgroundRepeat = 'no-repeat';
+
+            previewStyle.value = currentStyle;
+            console.log('预览区域已更新');
+
+            // 发送合成图像到控制台
+            sendImageToConsole(compositeImageData, "更新后的合成图像");
+        }
+
+        // 使用Vue的响应式系统来触发更新
         nextTick(() => {
-            // 4. 重新处理图层数据，确保所有计算属性都是最新的
-            processPsdLayers(psdCopy);
+            // 确保选中的图层仍然是当前图层
+            selectedLayer.value = currentSelectedLayer;
 
-            // 5. 更新数据
-            psdData.value = psdCopy;
-
-            // 6. 如果当前选中的图层在更新后可能已经变化，需要重新查找并选中它
-            if (selectedLayer.value) {
-                // 使用名称和位置查找对应的图层
-                const findLayerByNameAndPosition = (layer, name, left, top) => {
-                    if (!layer) return null;
-
-                    if (layer.name === name &&
-                        layer.left === left &&
-                        layer.top === top) {
-                        return layer;
-                    }
-
-                    if (layer.children) {
-                        for (const child of layer.children) {
-                            const found = findLayerByNameAndPosition(child, name, left, top);
-                            if (found) return found;
-                        }
-                    }
-
-                    return null;
-                };
-
-                const oldName = selectedLayer.value.name;
-                const oldLeft = selectedLayer.value.left;
-                const oldTop = selectedLayer.value.top;
-
-                const newSelectedLayer = findLayerByNameAndPosition(psdCopy, oldName, oldLeft, oldTop);
-                if (newSelectedLayer) {
-                    selectedLayer.value = newSelectedLayer;
-                }
-            }
-
-            // 7. 更新刷新键，强制组件重新渲染
+            // 增加刷新键，强制组件重新渲染
             refreshKey.value++;
-
             console.log('图层属性已更新，预览已刷新，刷新键:', refreshKey.value);
         });
     } catch (error) {
@@ -867,12 +966,53 @@ const updateTextLayer = () => {
     if (!selectedLayer.value || !isTextLayer.value) return;
 
     try {
-        // 重新生成文本图层的图像
-        // 这里需要根据文本属性重新生成图像
-        // 在实际应用中，可能需要使用canvas绘制文本
-
         // 标记文本图层已更新
         selectedLayer.value.textUpdated = true;
+
+        // 对于文本图层，我们需要重新生成图像
+        // 1. 清除现有的图像数据，这样processPsdLayers会重新生成
+        delete selectedLayer.value.imageData;
+
+        // 2. 如果有canvas，也需要清除或重新生成
+        if (selectedLayer.value.canvas) {
+            // 方法1：删除canvas，让processPsdLayers重新生成
+            // delete selectedLayer.value.canvas;
+
+            // 方法2：重新绘制canvas（更好的方法）
+            const canvas = selectedLayer.value.canvas;
+            const ctx = canvas.getContext('2d');
+            if (ctx) {
+                // 清除画布
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+                // 设置文本样式
+                const fontFamily = selectedLayer.value.text.font.name || 'Arial';
+                const fontSize = (selectedLayer.value.text.font.sizes && selectedLayer.value.text.font.sizes[0]) || 12;
+                const color = selectedLayer.value.text.color ?
+                    `rgb(${selectedLayer.value.text.color[0]}, ${selectedLayer.value.text.color[1]}, ${selectedLayer.value.text.color[2]})` :
+                    '#000000';
+
+                ctx.font = `${fontSize}px ${fontFamily}`;
+                ctx.fillStyle = color;
+                ctx.textBaseline = 'top';
+
+                // 绘制文本（简单实现，可以根据需要扩展）
+                const text = selectedLayer.value.text.text || '';
+                const lines = text.split('\n');
+                const lineHeight = fontSize * 1.2;
+
+                lines.forEach((line, index) => {
+                    ctx.fillText(line, 0, index * lineHeight);
+                });
+
+                // 更新图像数据
+                selectedLayer.value.imageData = canvas.toDataURL('image/png');
+                console.log('文本图层图像已重新生成');
+
+                // 发送文本图层图像到控制台
+                sendImageToConsole(selectedLayer.value.imageData, selectedLayer.value.name + " (文本更新)");
+            }
+        }
 
         // 直接调用更新图层函数
         updateLayer();
@@ -1040,6 +1180,84 @@ const hexToRgb = (hex) => {
         g: parseInt(result[2], 16),
         b: parseInt(result[3], 16)
     } : { r: 0, g: 0, b: 0 };
+};
+
+// 合成所有图层，生成预览图像
+const composeLayers = (psd) => {
+    if (!psd || !psd.width || !psd.height) {
+        console.error('PSD数据不完整，无法合成图层');
+        return;
+    }
+
+    console.log('开始合成所有图层...');
+
+    // 创建一个新的canvas用于合成
+    const compositeCanvas = document.createElement('canvas');
+    compositeCanvas.width = psd.width;
+    compositeCanvas.height = psd.height;
+    const ctx = compositeCanvas.getContext('2d');
+
+    // 清空画布，设置透明背景
+    ctx.clearRect(0, 0, compositeCanvas.width, compositeCanvas.height);
+
+    // 递归渲染图层
+    const renderLayer = (layer) => {
+        if (!layer || layer.hidden) return;
+
+        // 如果是组，先渲染子图层
+        if (layer.children && layer.children.length > 0) {
+            // 从下到上渲染子图层（数组中是从后到前）
+            for (let i = layer.children.length - 1; i >= 0; i--) {
+                renderLayer(layer.children[i]);
+            }
+        }
+
+        // 渲染当前图层
+        if (layer.imageData && !layer.needsClipping) {
+            try {
+                // 创建图像对象
+                const img = new Image();
+                img.src = layer.imageData;
+
+                // 同步绘制图像（这里使用了一个技巧，因为图像已经加载到浏览器缓存中）
+                ctx.save();
+
+                // 设置混合模式
+                ctx.globalCompositeOperation = layer.blendMode || 'normal';
+
+                // 设置不透明度
+                ctx.globalAlpha = layer.opacity !== undefined ? layer.opacity : 1;
+
+                // 绘制图像
+                ctx.drawImage(
+                    img,
+                    layer.left || 0,
+                    layer.top || 0,
+                    layer.width || img.width,
+                    layer.height || img.height
+                );
+
+                ctx.restore();
+            } catch (e) {
+                console.error(`图层 "${layer.name}" 渲染失败:`, e);
+            }
+        }
+    };
+
+    // 从根图层开始渲染
+    renderLayer(psd);
+
+    // 更新PSD的合成图像
+    psd.compositeImageData = compositeCanvas.toDataURL('image/png');
+
+    // 发送合成图像到控制台
+    sendImageToConsole(psd.compositeImageData, "合成图像");
+
+    // 如果需要，也可以保存canvas引用
+    psd.compositeCanvas = compositeCanvas;
+
+    console.log('图层合成完成');
+    return psd.compositeImageData;
 };
 </script>
 
